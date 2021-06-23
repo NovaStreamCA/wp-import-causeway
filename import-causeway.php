@@ -338,6 +338,10 @@ class Causeway {
                                     update_post_meta($post['ID'], $metaKey . '_key', $a);
                                     update_post_meta($post['ID'], $metaKey . '_value', $value);
                                 }
+
+                                if ($metaKey === 'General') {
+                                    update_post_meta($post['ID'], 'homepage', $value);
+                                }
                                 $x++;
                             }
                         }
