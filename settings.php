@@ -18,7 +18,7 @@
                     <label for="causeway_url">Causeway Backend URL</label>
                 </th>
                 <td>
-                    <input style="min-width: 20vw;" type="text" id="causeway_url" name="causeway_url" placeholder="" value="<?php echo empty(get_option('causeway-url')) ? CAUSEWAY_BACKEND_IMPORT_URL : get_option('causeway-url'); ?>" required="required" style="width: 100%;" />
+                    <input style="min-width: 20vw;" type="text" id="causeway_url" name="causeway_url" placeholder="" value="<?php echo empty(get_option('causeway-url')) ? CAUSEWAY_IMPORT_URL : get_option('causeway-url'); ?>" required="required" style="width: 100%;" />
                 </td>
             </tr>
             <tr style="vertical-align: top;">
