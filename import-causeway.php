@@ -155,22 +155,43 @@ class Causeway {
 
                 if (is_array($json['unchanged']) && !empty($json['unchanged'])) {
                     foreach ($json['unchanged'] as $listing) {
+                        $count++;
                         $activePostIds[] = $this->getPostIdByMeta('CausewayId', $listing);
                     }
                 }
 
                 $activePostIds = array_filter($activePostIds);
 
-                echo '<h2>Import Status</h2>';
-
-                $deleted = $this->deleteInactivePosts($activePostIds, $errorListingIds);
+                $deleted = $this->deleteInactivePosts($activePostIds, $errorListingIds, $messages);
 
                 set_time_limit($currentTimeLimit);
 
-                echo '<p>Finished importing <strong>' . $count .
-                '</strong> listing(s) from Causeway. Deleted <strong>' . $deleted .
-                '</strong> listing(s) from WordPress.</p>';
+                $filters = '';
+                if (is_array($json['filters']) && !empty($json['filters'])) {
+                    foreach ($json['filters'] as $key => $filter) {
+                        $filters .= sprintf('<li><strong>%s</strong>: %s</li>', ucfirst($key), join($filter, ', '));
+                    }
+                }
+
+                $messages[] = sprintf(
+                    '<p style="font-size: 1.375rem;">Finished importing <strong style="color: %s;">%d</strong>
+                     listing(s) from Causeway. Deleted <strong style="color: %s;">%d</strong> listing(s) from
+                     WordPress.</p>',
+                     '#985cc1',
+                    $count,
+                    '#d72c2c',
+                    $deleted
+                );
+
+                if (!empty($filters)) {
+                    $messages[] = sprintf(
+                        '<p style="font-size: 1.125rem; margin-bottom: 0.375rem;">Filters configured for this
+                        server on Causeway:</p><ul style="font-size: 1.063rem; margin-top: 0;">%s</ul>',
+                        $filters
+                    );
+                }
             } else {
+                $messages[] = '<p>Error with JSON feed.</p>';
             }
 
             if (is_array($messages) && !empty($messages)) {
@@ -314,11 +335,13 @@ class Causeway {
         }
 
         if (($oldChecksum != $listing['checksum']) || $fNewEntry) {
-            $messages[] = sprintf(
-                'New "Default" Photo (<strong>%s</strong> (Causeway) different from <strong>%s</strong> (WordPress)',
-                (empty($oldChecksum) ? 'N/A' : $oldChecksum),
-                $listing['checksum']
-            );
+            if (!$fNewEntry) {
+                $messages[] = sprintf(
+                    '"Default" Photo (<strong>%s</strong> (Causeway) different from <strong>%s</strong> (WordPress)',
+                    (empty($oldChecksum) ? 'N/A' : $oldChecksum),
+                    $listing['checksum']
+                );
+            }
             $attachmentTitle = sprintf('%s photo for %s', 'Default', $listing['name']);
 
             if (!empty($listing['photo'])) {
@@ -405,9 +428,12 @@ class Causeway {
         }
 
         $messages[] = sprintf(
-            'Listing <strong>%s</strong> has been successfully <strong style="color: %s;">%s</strong>.',
+            'Listing <a href="%s" rel="noopener" target="_blank" style="color: %s;">%s</a>
+            has been successfully <strong style="color: %s; font-weight: bold;">%s</strong>.',
+            get_the_permalink($post['ID']),
+            '#985cc1',
             $listing['name'],
-            ($fNewEntry ? '#2d863f' : '#d72c2c'),
+            ($fNewEntry ? '#2d863f' : '#2e97ca'),
             ($fNewEntry ? 'added' : 'updated')
         );
 
@@ -548,7 +574,7 @@ class Causeway {
         }
     }
     /****************************************************************************************************/
-    private function deleteInactivePosts($activePostIds, $errorListingIds) {
+    private function deleteInactivePosts($activePostIds, $errorListingIds, &$messages) {
         global $wpdb;
 
         $count = 0;
@@ -568,9 +594,33 @@ class Causeway {
             $attachmentId = get_post_thumbnail_id($postId);
             delete_post_thumbnail($postId);
             wp_delete_attachment($attachmentId, true);
+            $permalink = get_the_permalink($postId);
+            $title = get_the_title($postId);
 
             if (wp_delete_post($postId, true) == true) {
                 $count++;
+
+                $messages[] = sprintf(
+                    'Listing <span style="color: %s;">%s</span> has been successfully
+                    <strong style="color: %s; font-weight: bold;">%s</strong>.',
+                    $permalink,
+                    '#985cc1',
+                    $title,
+                    '#d72c2c',
+                    'deleted',
+                );
+            } else {
+                $messages[] = sprintf(
+                    '<span style="color: %s; font-weight: bold;">ERROR:</span> Listing
+                    <a href="%s" rel="noopener" target="_blank" style="color: %s;">%s</a> could not
+                     be <strong style="color: %s; font-weight: bold;">%s</strong>.',
+                    '#d72c2c',
+                    $permalink,
+                    '#985cc1',
+                    $title,
+                    '#d72c2c',
+                    'deleted',
+                );
             }
         }
 
