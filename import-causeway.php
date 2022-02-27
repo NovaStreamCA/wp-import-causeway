@@ -3,7 +3,7 @@
  * Plugin Name: Causeway Importer
  * Plugin URI: http://causeway.novastream.ca
  * Description: Import all approved listings from the Causeway backend into WordPress to display on your site.
- * Version: 1.0.0
+ * Version: 1.0.2
  * Requires at least: 4.8
  * Requires PHP: 7.0
  * Author: Matthew Lewis
@@ -14,7 +14,7 @@
 define('CAUSEWAY_PLUGIN_INTERNAL_NAME', 'causeway-import');
 define('CAUSEWAY_PLUGIN_NAME', 'Causeway Importer');
 define('CAUSEWAY_PLUGIN_NAME_SHORT', 'Causeway');
-define('CAUSEWAY_BACKEND_IMPORT_URL', 'https://causeway3.novastream.dev/export');
+define('CAUSEWAY_BACKEND_IMPORT_URL', 'https://causewayapp.com/export');
 define('STARTING_IMPORT_ID', 10000);
 
 $slugToName = array(
@@ -345,6 +345,44 @@ class Causeway {
 
                                 $x++;
                             }
+                        }
+                    }
+
+                    update_post_meta($post['ID'], $key . '_count', $x);
+                }
+            }
+        }
+
+        $attributeKeys = array('attributes');
+        foreach ($attributeKeys as $key) {
+            if (!empty($listing[$key])) {
+                if (is_array($listing[$key])) {
+                    $x = 0;
+
+                    foreach ($listing[$key] as $a => $b) {
+                        if (is_array($b)) {
+                            foreach ($b as $value) {
+                                $metaKey = sprintf('%s_%d', $key, $x);
+                                if (is_array($value)) {
+                                    update_post_meta($post['ID'], $metaKey . '_key', $a);
+                                    foreach ($value as $k => $v) {
+                                        update_post_meta($post['ID'], $metaKey . '_' . $k, $v);
+                                    }
+                                    $x++;
+                                } elseif (!empty($value)) {
+                                    if (count($b) > 1) {
+                                        update_post_meta($post['ID'], $a . '_' . $x, $value);
+                                    } else {
+                                        update_post_meta($post['ID'], $a, $value);
+                                    }
+
+                                    $x++;
+                                }
+                            }
+                            if ($x > 1) {
+                                update_post_meta($post['ID'], $a . '_count', $x);
+                            }
+                            $x = 0;
                         }
                     }
 
