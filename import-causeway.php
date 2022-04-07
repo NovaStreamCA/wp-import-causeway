@@ -3,7 +3,7 @@
  * Plugin Name: Causeway Importer
  * Plugin URI: http://causeway.novastream.ca
  * Description: Import all approved listings from the Causeway backend into WordPress to display on your site.
- * Version: 1.0.1
+ * Version: 1.0.3
  * Requires at least: 4.8
  * Tested up to: 5.8
  * Requires PHP: 7.4
@@ -15,7 +15,7 @@
 define('CAUSEWAY_PLUGIN_INTERNAL_NAME', 'causeway-import');
 define('CAUSEWAY_PLUGIN_NAME', 'Causeway Importer');
 define('CAUSEWAY_PLUGIN_NAME_SHORT', 'Causeway');
-define('CAUSEWAY_IMPORT_URL', 'https://causewayapp.com/export');
+define('CAUSEWAY_BACKEND_IMPORT_URL', 'https://causewayapp.com/export');
 define('STARTING_IMPORT_ID', 10000);
 
 $slugToName = array(
@@ -64,7 +64,7 @@ class Causeway {
         include_once plugin_dir_path(__FILE__) . '/PDUpdater.php';
 
         $updater = new PDUpdater(__FILE__);
-        $updater->set_username('parityhero');
+        $updater->set_username('NovaStreamCA');
         $updater->set_repository('wp-import-causeway');
         $updater->initialize();
     }
@@ -139,7 +139,6 @@ class Causeway {
                 $currentTimeLimit = ini_get('max_execution_time');
                 set_time_limit(0);
 
-
                 if (is_array($json['results']) && !empty($json['results'])) {
                     foreach ($json['results'] as $listing) {
                         $postId = $this->generatePost($listing, $messages);
@@ -151,7 +150,6 @@ class Causeway {
                         }
                     }
                 }
-
 
                 if (is_array($json['unchanged']) && !empty($json['unchanged'])) {
                     foreach ($json['unchanged'] as $listing) {
@@ -191,7 +189,7 @@ class Causeway {
                     );
                 }
             } else {
-                $messages[] = '<p>Error with JSON feed.</p>';
+                echo '<p>Unable to parse the feed from Causeway backend. Please contact support.</p>';
             }
 
             if (is_array($messages) && !empty($messages)) {
@@ -396,9 +394,52 @@ class Causeway {
                                 } else {
                                     update_post_meta($post['ID'], $metaKey . '_key', $a);
                                     update_post_meta($post['ID'], $metaKey . '_value', $value);
+
+                                    if ($key == 'websites' && $a === 'General') {
+                                        update_post_meta($post['ID'], 'homepage', $value);
+                                    }
                                 }
+
                                 $x++;
                             }
+                        }
+                    }
+
+                    update_post_meta($post['ID'], $key . '_count', $x);
+                }
+            }
+        }
+
+        $attributeKeys = array('attributes');
+        foreach ($attributeKeys as $key) {
+            if (!empty($listing[$key])) {
+                if (is_array($listing[$key])) {
+                    $x = 0;
+
+                    foreach ($listing[$key] as $a => $b) {
+                        if (is_array($b)) {
+                            foreach ($b as $value) {
+                                $metaKey = sprintf('%s_%d', $key, $x);
+                                if (is_array($value)) {
+                                    update_post_meta($post['ID'], $metaKey . '_key', $a);
+                                    foreach ($value as $k => $v) {
+                                        update_post_meta($post['ID'], $metaKey . '_' . $k, $v);
+                                    }
+                                    $x++;
+                                } elseif (!empty($value)) {
+                                    if (count($b) > 1) {
+                                        update_post_meta($post['ID'], $a . '_' . $x, $value);
+                                    } else {
+                                        update_post_meta($post['ID'], $a, $value);
+                                    }
+
+                                    $x++;
+                                }
+                            }
+                            if ($x > 1) {
+                                update_post_meta($post['ID'], $a . '_count', $x);
+                            }
+                            $x = 0;
                         }
                     }
 
@@ -512,7 +553,7 @@ class Causeway {
     /****************************************************************************************************/
     private function importJson($secretKey, $forceReimport = true, &$messages = array()) {
         $serverName = str_replace(array('www.', 'http://', 'https://'), array('', '', ''), $_SERVER['HTTP_HOST']);
-        $endpoint = empty(get_option('causeway-url')) ? CAUSEWAY_IMPORT_URL : get_option('causeway-url');
+        $endpoint = empty(get_option('causeway-url')) ? CAUSEWAY_BACKEND_IMPORT_URL : get_option('causeway-url');
 
         $jsonUrl = sprintf('%s/%s?&server=%s&forceReimport=%d', $endpoint, $secretKey, $serverName, $forceReimport);
         if (!empty($dateImport)) {
@@ -538,7 +579,6 @@ class Causeway {
 
             if (empty($curlResult)) {
                 return false;
-                die;
             }
 
             $jsonData = json_decode($curlResult, true);

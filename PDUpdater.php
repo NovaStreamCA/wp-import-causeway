@@ -89,7 +89,6 @@ class PDUpdater {
         if (property_exists($transient, 'checked')) {
             if ($checked = $transient->checked) {
                 $this->get_repository_info();
-
                 $out_of_date = version_compare($this->github_response['tag_name'], $checked[$this->basename], 'gt');
 
                 if ($out_of_date) {
