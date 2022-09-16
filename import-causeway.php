@@ -395,7 +395,7 @@ class Causeway {
                                     update_post_meta($post['ID'], $metaKey . '_key', $a);
                                     update_post_meta($post['ID'], $metaKey . '_value', $value);
 
-                                    if ($key == 'websites' && $a === 'General') {
+                                    if ($key == 'websites' && $a === 'General' && $x == 0) {
                                         update_post_meta($post['ID'], 'homepage', $value);
                                     }
                                 }
