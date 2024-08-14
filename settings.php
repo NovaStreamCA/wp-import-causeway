@@ -2,7 +2,16 @@
     <h2><?php echo __(CAUSEWAY_PLUGIN_NAME . ' Settings', CAUSEWAY_PLUGIN_INTERNAL_NAME) ?></h2>
     <form method="post" action="">
         <h3>Main settings</h3>
-        <p>Update the following settings to match your needs for your website. Please note hitting the <strong>Update</strong> button will not import the information into your website. After you save your settings you should use the <strong>Import</strong> buttons to retrieve the data.</p>
+        <p>Update the following settings to match your needs for your website.<br><br> Please note hitting the <strong>Save settings</strong> button will not import the information into your website. <br>After you save your settings, your listings should import every hour.</p>
+
+        <p>
+        <strong>Backend URL</strong> - This is the endpoint where the feed will be retrieved from, the default is <strong><?php echo CAUSEWAY_BACKEND_IMPORT_URL; ?></strong> and should not change.<br>
+        <strong>Server API Key</strong> - This is a key to grant access for your WordPress to access the feed. This key will be provided by NovaStream. If you do not have this key, please contact support@novastream.ca<br>
+        <strong>Force import of all listings</strong> - By default, this plugin will only pull new entries since last import. Check this box if you want to re-import all listings.<br>
+        <strong>Allow category label renaming</strong> - Check this if you want to rename the default category names inside the WordPress admin. This usually is not needed.<br>
+        </p>
+
+        <p>On first import (or if force import is checked), it may take a long time to do the import depending on how many listings are being retrieved.<br> Even if the connection times out, it should still be importing in the background and there is no need to hit the import button again.</p>
 
         <?php
         if (isset($_POST['causeway-save'])) {
@@ -61,9 +70,8 @@
         }
         ?>
 
-        <hr style="margin-top: 30px; margin-bottom: 30px;"/>
-        <h3>Other actions</h3>
-        <?php @submit_button(__('Import listings now', CAUSEWAY_PLUGIN_INTERNAL_NAME), 'primary', 'causeway-import', false); ?>
-
+<!--        <hr style="margin-top: 30px; margin-bottom: 30px;"/>-->
+<!--        <h3>Other actions</h3>-->
+        <?php //@submit_button(__('Import listings now', CAUSEWAY_PLUGIN_INTERNAL_NAME), 'primary', 'causeway-import', false); ?>
     </form>
 </div>
