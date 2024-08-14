@@ -1,12 +1,11 @@
 <?php
 /**
  * Plugin Name: Causeway Importer
- * Plugin URI: http://causeway.novastream.ca
+ * Plugin URI: https://causewayapp.ca
  * Description: Import all approved listings from the Causeway backend into WordPress to display on your site.
- * Version: 1.0.3
+ * Version: 1.0.9
  * Requires at least: 4.8
- * Tested up to: 5.8
- * Requires PHP: 7.4
+ * Requires PHP: 7.1
  * Author: NovaStream
  * Author URI: https://novastream.ca
  * License: GPL2
@@ -15,7 +14,7 @@
 define('CAUSEWAY_PLUGIN_INTERNAL_NAME', 'causeway-import');
 define('CAUSEWAY_PLUGIN_NAME', 'Causeway Importer');
 define('CAUSEWAY_PLUGIN_NAME_SHORT', 'Causeway');
-define('CAUSEWAY_BACKEND_IMPORT_URL', 'https://causewayapp.com/export');
+define('CAUSEWAY_BACKEND_IMPORT_URL', 'https://causewayapp.ca/export');
 define('STARTING_IMPORT_ID', 10000);
 
 $slugToName = array(
@@ -46,7 +45,7 @@ class Causeway {
         register_deactivation_hook(__FILE__, array($this, 'onDeactivate'));
 
         add_action('init', array($this, 'onInit'));
-        add_action('admin_menu', array($this, 'adminMenu'));
+        add_action( 'admin_menu', array($this, 'adminMenu'));
     }
     /****************************************************************************************************/
     public function onActivate() {
@@ -56,24 +55,32 @@ class Causeway {
     /****************************************************************************************************/
     public function onDeactivate() {
         flush_rewrite_rules();
+        wp_clear_scheduled_hook('cron_import_causeway_morning');
+        wp_clear_scheduled_hook('cron_import_causeway_afternoon');
     }
     /****************************************************************************************************/
     public function onInit() {
         $this->registerPostType();
 
-        include_once plugin_dir_path(__FILE__) . '/PDUpdater.php';
+        add_action('cron_import_causeway', array($this, 'importJson'));
 
-        $updater = new PDUpdater(__FILE__);
-        $updater->set_username('NovaStreamCA');
-        $updater->set_repository('wp-import-causeway');
-        $updater->initialize();
+        // 13:00:00 UTC is 10am Atlantic
+        if (! wp_next_scheduled ( 'cron_import_causeway_morning' )) {
+            wp_schedule_event(strtotime('13:00:00'), 'daily', 'cron_import_causeway');
+        }
+
+
+        // 19:00:00 UTC is 4pm Atlantic
+        if (! wp_next_scheduled ( 'cron_import_causeway_afternoon' )) {
+            wp_schedule_event(strtotime('19:00:00'), 'daily', 'cron_import_causeway');
+        }
     }
     /****************************************************************************************************/
     public function adminMenu() {
         add_menu_page(
             __(CAUSEWAY_PLUGIN_NAME_SHORT, 'textdomain'),
             CAUSEWAY_PLUGIN_NAME_SHORT,
-            'manage_options',
+            'edit_posts',
             CAUSEWAY_PLUGIN_INTERNAL_NAME,
             array($this, 'adminOptionsPage'),
             plugin_dir_url(__FILE__) . '/images/logo.png',
@@ -83,126 +90,17 @@ class Causeway {
     /****************************************************************************************************/
     public function adminOptionsPage() {
         global $wpdb;
-        $count = 0;
-        $activePostIds = array();
-        $errorListingIds = array();
-        $messages = array();
 
-        if (!current_user_can('manage_options')) {
+        if (!current_user_can('edit_posts')) {
             wp_die(__('You do not have sufficient permissions to access this page.', CAUSEWAY_PLUGIN_INTERNAL_NAME));
         }
 
 
         if (isset($_POST['causeway-import'])) {
-            $json = $this->importJson(
-                get_option('causeway-key'),
-                boolval(get_option('causeway-import')),
-                $messages
-            );
+            $endpoint = empty(get_option('causeway-url')) ? CAUSEWAY_BACKEND_IMPORT_URL : get_option('causeway-url');
+            $json = $this->importJson(get_option('causeway-key'), boolval(get_option('causeway-import')), $endpoint);
 
-            echo '<section class="causeway-import-status" style="margin-bottom: 3rem;">';
 
-            if ($json !== false) {
-                /* Create any category terms available to this server */
-                if (is_array($json['serverCategories']) && !empty($json['serverCategories'])) {
-                    foreach ($json['serverCategories'] as $category) {
-                        if (empty($category['description'])) {
-                            $category['description'] = sprintf(
-                                '%s (Type: %s)',
-                                $category['categoryName'],
-                                $category['typeName']
-                            );
-                        }
-
-                        $term = get_term_by('slug', $category['termName'], 'listing-category');
-
-                        if ($term === false) {
-                            wp_insert_term($category['categoryName'], 'listing-category', array(
-                                'description' => $category['description'],
-                                'slug' => $category['termName'],
-                            ));
-                        } else {
-                            wp_update_term($term->term_id, 'listing-category', array(
-                                'description' => $category['description'],
-                                'slug' => $category['termName'],
-                            ));
-
-                            if (get_option('causeway-allow-category-rename') != true) {
-                                wp_update_term($term->term_id, 'listing-category', array(
-                                    'name' => $category['categoryName'],
-                                ));
-                            }
-                        }
-                    }
-                }
-
-                $currentTimeLimit = ini_get('max_execution_time');
-                set_time_limit(0);
-
-                if (is_array($json['results']) && !empty($json['results'])) {
-                    foreach ($json['results'] as $listing) {
-                        $postId = $this->generatePost($listing, $messages);
-                        if ($postId === false) {
-                            $errorListingIds[] = $listing['id'];
-                        } else {
-                            $count++;
-                            $activePostIds[] = $postId;
-                        }
-                    }
-                }
-
-                if (is_array($json['unchanged']) && !empty($json['unchanged'])) {
-                    foreach ($json['unchanged'] as $listing) {
-                        $count++;
-                        $activePostIds[] = $this->getPostIdByMeta('CausewayId', $listing);
-                    }
-                }
-
-                $activePostIds = array_filter($activePostIds);
-
-                $deleted = $this->deleteInactivePosts($activePostIds, $errorListingIds, $messages);
-
-                set_time_limit($currentTimeLimit);
-
-                $filters = '';
-                if (is_array($json['filters']) && !empty($json['filters'])) {
-                    foreach ($json['filters'] as $key => $filter) {
-                        $filters .= sprintf('<li><strong>%s</strong>: %s</li>', ucfirst($key), join($filter, ', '));
-                    }
-                }
-
-                $messages[] = sprintf(
-                    '<p style="font-size: 1.375rem;">Finished importing <strong style="color: %s;">%d</strong>
-                     listing(s) from Causeway. Deleted <strong style="color: %s;">%d</strong> listing(s) from
-                     WordPress.</p>',
-                     '#985cc1',
-                    $count,
-                    '#d72c2c',
-                    $deleted
-                );
-
-                if (!empty($filters)) {
-                    $messages[] = sprintf(
-                        '<p style="font-size: 1.125rem; margin-bottom: 0.375rem;">Filters configured for this
-                        server on Causeway:</p><ul style="font-size: 1.063rem; margin-top: 0;">%s</ul>',
-                        $filters
-                    );
-                }
-            } else {
-                echo '<p>Unable to parse the feed from Causeway backend. Please contact support.</p>';
-            }
-
-            if (is_array($messages) && !empty($messages)) {
-                echo '<div class="notice notice-info is-dismissible" style="padding-bottom: 1.5rem;">
-                <p style="font-size: 1.125rem;"><strong>Causeway Status</strong></p>';
-
-                foreach ($messages as $message) {
-                    echo sprintf('<p>%s</p>', $message);
-                }
-                echo '</div>';
-            }
-
-            echo '</section>';
         }
 
         include (sprintf('%s/settings.php', dirname(__FILE__)));
@@ -210,6 +108,7 @@ class Causeway {
     /****************************************************************************************************/
     private function generatePost($listing, &$messages = array()) {
         global $wpdb;
+        global $EventsManager;
         if (!function_exists('download_url')) {
             require_once(ABSPATH . 'wp-admin/includes/media.php');
             require_once(ABSPATH . 'wp-admin/includes/file.php');
@@ -230,15 +129,20 @@ class Causeway {
         // $post['post_modified_gmt'] = get_gmt_from_date($listing['dateUpdated']);
         $post['import_id'] = STARTING_IMPORT_ID + $postCausewayId;
 
-        $meta = $wpdb->get_row(
-            "SELECT post_id FROM $wpdb->postmeta
-            WHERE meta_key = 'causewayId' AND meta_value = '{$postCausewayId}'"
-        );
+        $meta = $wpdb->get_row("SELECT post_id FROM $wpdb->postmeta WHERE meta_key = 'causewayId' AND meta_value = '{$postCausewayId}'");
 
         if (!is_null($meta)) {
-            $fNewEntry = false;
-            $post['ID'] = $meta->post_id;
+            $postExists = $wpdb->get_row("SELECT id FROM $wpdb->posts WHERE id = '" . intval($meta->post_id) . "'");
+            if ($postExists) {
+                $fNewEntry = false;
+                $post['ID'] = $postId = $meta->post_id;
+            } else {
+                unset($post['ID']);
+                #echo "Missing post {$meta->post_id} {$listing['name']} found in postmeta\n";
+            }
         } else {
+            #$messages[] = sprintf("Could not find post ID for %s using %d", $post['post_title'], $postCausewayId);
+            unset($post['ID']);
         }
 
         $post['post_status'] = ($fAutoPublish ? 'publish' : 'private');
@@ -260,20 +164,49 @@ class Causeway {
             if (is_array($typeName)) {
                 foreach ($typeName as $name) {
                     $post['tax_input']['listing-type'][] = $name;
+                    if ($name == 'Event') {
+                        $post['post_type'] = 'events';
+                    }
                 }
             } else {
                 $post['tax_input']['listing-type'][] = $typeName;
+                if ($typeName == 'Event') {
+                    $post['post_type'] = 'events';
+                }
             }
         }
+
+        // FIXME: Temporarily disable any other post types for import, we only want events
+        if ($post['post_type'] != 'events') {
+            return -1;
+        }
+
+        $translateCategories = [
+            'event-music' => 'music',
+            'event-food-drink' => 'food-drink',
+            'event-community' => 'community-events',
+            'event-festivals' => 'festivals',
+            'event-heritage' => 'heritage',
+            'event-ceilidh-kitchen-parties' => 'ceilidhs-kitchen-parties',
+            'event-arts-culture' => 'performing-arts-culture',
+        ];
 
         $post['tax_input']['listing-category'] = array();
         foreach ($listing['categories'] as $listingType => $category) {
             if (is_array($category)) {
                 foreach ($category as $value) {
                     $post['tax_input']['listing-category'][] = $value['slug'];
+
+                    if (array_key_exists($value['slug'], $translateCategories)) {
+                        $post['tax_input']['events_category'][] = $translateCategories[$value['slug']];
+                    }
                 }
             } else {
                 $post['tax_input']['listing-category'][] = $category['slug'];
+
+                if (array_key_exists($value['slug'], $translateCategories)) {
+                    $post['tax_input']['events_category'][] = $translateCategories[$category['slug']];
+                }
             }
         }
 
@@ -291,9 +224,10 @@ class Causeway {
             }
         }
 
+
         $post['ID'] = wp_insert_post($post, true);
         if (is_wp_error($post['ID']) || $post['ID'] === 0) {
-            $messages[] = sprintf('Error occurred during post creation: %s', $post['ID']->get_error_message());
+            #$messages[] = sprintf('Error occurred during post %s (%s), creation: %s', $post['post_title'], $postId, $post['ID']->get_error_message());
             return false;
         }
 
@@ -308,7 +242,7 @@ class Causeway {
                             'parent'=> 0
                         ));
                     }
-                    wp_set_object_terms($post['ID'], $t, $tax, $fAppend);
+                    $res = wp_set_object_terms($post['ID'], $t, $tax, $fAppend);
                     $fAppend = true;
                 }
                 wp_update_term_count($t, $tax, true);
@@ -326,46 +260,7 @@ class Causeway {
         }
 
         update_post_meta($post['ID'], 'causewayId', $postCausewayId);
-        $oldChecksum = get_post_meta($post['ID'], 'defaultPhotoChecksum', true);
-
-        if (empty($listing['checksum'])) {
-            $listing['checksum'] = null;
-        }
-
-        if (($oldChecksum != $listing['checksum']) || $fNewEntry) {
-            if (!$fNewEntry) {
-                $messages[] = sprintf(
-                    '"Default" Photo (<strong>%s</strong> (Causeway) different from <strong>%s</strong> (WordPress)',
-                    (empty($oldChecksum) ? 'N/A' : $oldChecksum),
-                    $listing['checksum']
-                );
-            }
-            $attachmentTitle = sprintf('%s photo for %s', 'Default', $listing['name']);
-
-            if (!empty($listing['photo'])) {
-                add_filter( 'http_request_host_is_external', '__return_true' );
-                $attachmentId = media_sideload_image($listing['photo'], $post['ID'], $attachmentTitle, 'id');
-                remove_filter( 'http_request_host_is_external', '__return_true' );
-
-                if (!empty($attachmentId) && !is_wp_error($attachmentId)) {
-                    set_post_thumbnail($post['ID'], $attachmentId);
-                    $attachmentFilePath = get_attached_file($attachmentId);
-                    $checksumFile = sha1_file($attachmentFilePath);
-                    update_post_meta($post['ID'], 'defaultPhotoChecksum', $checksumFile);
-                    update_post_meta($post['ID'], 'defaultPhotoUrl', wp_get_attachment_url($attachmentId));
-                    update_post_meta($post['ID'], 'defaultPhotoPath', $attachmentFilePath);
-                } else {
-                    $messages[] = sprintf(
-                        'Error importing photo from %s for <strong>%s</strong>: "%s"',
-                        $listing['photo'],
-                        $listing['name'],
-                        $attachmentId->get_error_message()
-                    );
-                }
-            } else {
-                $messages[] = sprintf('"Default" Photo entry missing from Causeway for %s ', $listing['name']);
-            }
-        }
+        update_post_meta($post['ID'], 'defaultPhotoUrl', $listing['photo']);
 
         if (!$fNewEntry) {
             $skipDeleteKeys = array('causewayId', 'defaultPhotoChecksum', 'defaultPhotoUrl', 'defaultPhotoPath');
@@ -394,52 +289,9 @@ class Causeway {
                                 } else {
                                     update_post_meta($post['ID'], $metaKey . '_key', $a);
                                     update_post_meta($post['ID'], $metaKey . '_value', $value);
-
-                                    if ($key == 'websites' && $a === 'General' && $x == 0) {
-                                        update_post_meta($post['ID'], 'homepage', $value);
-                                    }
                                 }
-
                                 $x++;
                             }
-                        }
-                    }
-
-                    update_post_meta($post['ID'], $key . '_count', $x);
-                }
-            }
-        }
-
-        $attributeKeys = array('attributes');
-        foreach ($attributeKeys as $key) {
-            if (!empty($listing[$key])) {
-                if (is_array($listing[$key])) {
-                    $x = 0;
-
-                    foreach ($listing[$key] as $a => $b) {
-                        if (is_array($b)) {
-                            foreach ($b as $value) {
-                                $metaKey = sprintf('%s_%d', $key, $x);
-                                if (is_array($value)) {
-                                    update_post_meta($post['ID'], $metaKey . '_key', $a);
-                                    foreach ($value as $k => $v) {
-                                        update_post_meta($post['ID'], $metaKey . '_' . $k, $v);
-                                    }
-                                    $x++;
-                                } elseif (!empty($value)) {
-                                    if (count($b) > 1) {
-                                        update_post_meta($post['ID'], $a . '_' . $x, $value);
-                                    } else {
-                                        update_post_meta($post['ID'], $a, $value);
-                                    }
-
-                                    $x++;
-                                }
-                            }
-                            if ($x > 1) {
-                                update_post_meta($post['ID'], $a . '_count', $x);
-                            }
-                            $x = 0;
                         }
                     }
 
@@ -468,16 +320,133 @@ class Causeway {
             update_post_meta($post['ID'], 'location_' . $key, $listing['location'][$key]);
         }
 
-        $messages[] = sprintf(
-            'Listing <a href="%s" rel="noopener" target="_blank" style="color: %s;">%s</a>
-            has been successfully <strong style="color: %s; font-weight: bold;">%s</strong>.',
-            get_the_permalink($post['ID']),
-            '#985cc1',
-            $listing['name'],
-            ($fNewEntry ? '#2d863f' : '#2e97ca'),
-            ($fNewEntry ? 'added' : 'updated')
-        );
+        if (class_exists('ACF') && $post['post_type'] === 'events') {
+            $address = '';
+            if (!empty($listing['location']['name'])) {
+                update_field('venue', $listing['location']['name'], $post['ID']);
+            } else {
+                update_field('venue', '', $post['ID']);
+            }
+            if (!empty($listing['location']['street'])) {
+                $address .= $listing['location']['street'] . ', ';
+            }
+            if (!empty($listing['location']['community'])) {
+                $address .= $listing['location']['community'] . ', ';
 
+                $communityId = (int)$wpdb->get_var( $wpdb->prepare("SELECT ID FROM $wpdb->posts WHERE post_title LIKE '%s' AND post_parent != 0", $wpdb->esc_like($listing['location']['community'])) );
+
+                if ($communityId) {
+                    $region = get_field('region', $communityId);
+                    update_field('community', $communityId, $post['ID']);
+                } else {
+                    $region = null;
+                    $errorMessages[] = sprintf('Could not find community %s in communities CPT for ', $listing['location']['community'], $listing['name']);
+                }
+                update_field('feed_community', $listing['location']['community'], $post['ID']);
+                update_field('region', $region, $post['ID']);
+            } else {
+                update_field('community', '', $post['ID']);
+            }
+            $address = substr($address, 0, -2);
+            update_field('address', $address, $post['ID']);
+            update_field('province', 'Nova Scotia', $post['ID']);
+            update_field('postal_code', $listing['location']['postalCode'], $post['ID']);
+            update_field('latitude', $listing['location']['lat'], $post['ID']);
+            update_field('longitude', $listing['location']['lng'], $post['ID']);
+            update_field('description', $listing['description'], $post['ID']);
+            update_field('admission_price', '', $post['ID']);
+            update_field('date_description', '', $post['ID']);
+            update_field('feed_region', '', $post['ID']);
+            update_field('product_id', '', $post['ID']);
+            update_field('product_images', '', $post['ID']);
+            update_field('product_type', '', $post['ID']);
+            update_field('tripadvisor_id', '', $post['ID']);
+            update_field('featured', '0', $post['ID']);
+            update_field('patio_lantern', '0', $post['ID']);
+            update_field('tunes_town', '0', $post['ID']);
+
+            $frequency = strtoupper($listing['dateFrequency']);
+            $row = array(
+                'add_or_exclude_date' => true,
+                'start_date' => $listing['dateStart'],
+                'repeating_date' => empty($listing['dateFrequency']) ? '0' : '1',
+                'end_date' => empty($listing['dateEnd']) ? null : $listing['dateEnd'],
+                'repeat_interval' => empty($listing['dateInterval']) ? null : $listing['dateInterval'],
+                'repeat_frequency' => $frequency,
+            );
+
+            $totalSchedules = count((array)get_field('event_schedule', $post['ID']));
+
+            // Remove any saved schedules for this post
+            for ($x = 1; $x < $totalSchedules; $x++) {
+                delete_row('event_schedule', $x, $post['ID']);
+            }
+
+            if (!have_rows('event_schedule', $post['ID'])) {
+                add_row('event_schedule', $row, $post['ID']);
+            } else {
+                // this will never happen since we delete_row()
+                update_row('event_schedule', 1, $row, $post['ID']);
+            }
+
+            //if (!empty($listing['contacts']['Phone (Primary)'])) {
+                update_field('telephone_1', $listing['contacts']['Phone (Primary)'][0] ?? '', $post['ID']);
+            //}
+            //if (!empty($listing['contacts']['Email'])) {
+                update_field('email', $listing['contacts']['Email'][0] ?? '', $post['ID']);
+                update_field('fax', $listing['contacts']['Fax'][0] ?? '', $post['ID']);
+            //}
+            //if (!empty($listing['websites']['General'])) {
+                update_field('website', $listing['websites']['General'][0] ?? '', $post['ID']);
+            //}
+            //if (!empty($listing['websites']['Facebook'])) {
+                update_field('facebook', $listing['websites']['Facebook'][0] ?? '', $post['ID']);
+            //}
+            //if (!empty($listing['websites']['Facebook'])) {
+                update_field('twitter', $listing['websites']['Twitter'][0] ?? '', $post['ID']);
+            //}
+            //if (!empty($listing['websites']['Instagram'])) {
+                update_field('instagram', $listing['websites']['Instagram'][0] ?? '', $post['ID']);
+            //}
+            //if (!empty($listing['websites']['YouTube'])) {
+                update_field('youtube', $listing['websites']['YouTube'][0] ?? '', $post['ID']);
+            //}
+
+            $args = array(
+                'post_type' => 'attachment',
+                'post_mime_type'=>'image',
+                'post_status' => 'publish',
+                'posts_per_page' => 1,
+                'meta_query' => array(
+                    array(
+                        'key' => '_source_url',
+                        'value' => $listing['photo'],
+                    ),
+                ),
+            );
+
+
+            $image = $wpdb->get_var($wpdb->prepare(
+                "SELECT `post_id` as ID FROM {$wpdb->prefix}postmeta WHERE `meta_key` = %s AND `meta_value` = %s",
+                '_source_url',
+                $listing['photo']
+            ));
+
+            if (empty($image)) {
+                $image = media_sideload_image($listing['photo'], $post['ID'], $post['post_title'], $return = 'id');
+            }
+
+            update_field('images', [ 'image' => $image ], $post['ID']);
+
+            //do_action('save_post', $post['ID'], $post, true);
+            $a = new stdClass();
+            $a->post_type = 'events';
+
+            $EventsManager->saveRepeatingEventData($post['ID'], $a, true);
+
+        }
+
+        #$messages[] = sprintf('Listing <strong>%s</strong> has been successfully <strong>%s</strong>.', $listing['name'], ($fNewEntry ? 'added' : 'updated'));
         return $post['ID'];
     }
     /****************************************************************************************************/
@@ -516,6 +485,7 @@ class Causeway {
             //'menu_icon' => plugin_dir_url(__FILE__) . '/images/wp_marcato_logo.png',
             //'taxonomies' => $postTaxonomies[$customTypePost]//array('category', 'post_tag')
         ));
+        #var_dump(add_post_type_support('listings', $postSupport));
 
         foreach ($this->listingTaxonomies as $singleLabel => $multipleLabel) {
             $taxonomy = 'listing-' . strtolower($singleLabel);
@@ -551,25 +521,30 @@ class Causeway {
 
     }
     /****************************************************************************************************/
-    private function importJson($secretKey, $forceReimport = true, &$messages = array()) {
-        $serverName = str_replace(array('www.', 'http://', 'https://'), array('', '', ''), $_SERVER['HTTP_HOST']);
-        $endpoint = empty(get_option('causeway-url')) ? CAUSEWAY_BACKEND_IMPORT_URL : get_option('causeway-url');
+    public function importJson() {
 
-        $jsonUrl = sprintf('%s/%s?&server=%s&forceReimport=%d', $endpoint, $secretKey, $serverName, $forceReimport);
+        $endpoint = empty(get_option('causeway-url')) ? CAUSEWAY_BACKEND_IMPORT_URL : get_option('causeway-url');
+        if (empty($_SERVER) || empty($_SERVER['HTTP_HOST'])) {
+            $hostName = 'unknown.tld';
+        } else {
+            $hostName = $_SERVER['HTTP_HOST'] ?? 'unknown.tld';
+        }
+        $serverName = str_replace(array('www.', 'http://', 'https://'), array('', '', ''), $hostName);
+        $jsonUrl = sprintf(
+            '%s/%s?&server=%s&forceReimport=%d',
+            $endpoint,
+            get_option('causeway-key'),
+            $serverName,
+            boolval(get_option('causeway-import'))
+        );
+
         if (!empty($dateImport)) {
             $jsonUrl .= '&date=' . strip_tags($dateImport);
         }
 
         if (defined('WP_DEBUG')) {
-            echo sprintf(
-                '<p>Using URL: <strong><a rel="%s" target="%s" href="%s">%s</a></strong> for import.<br><br></p>',
-                'noopener',
-                '_blank',
-                $jsonUrl,
-                $jsonUrl,
-            );
+            #echo '<p>Using URL: <strong><a rel="noopener" target="_blank" href="' . $jsonUrl . '">' . $jsonUrl . '</a></strong> for import.<br><br></p>';
         }
-
         if (function_exists('curl_init')) {
             $curl = curl_init($jsonUrl);
             curl_setopt($curl, CURLOPT_RETURNTRANSFER, true);
@@ -579,16 +554,10 @@ class Causeway {
 
             if (empty($curlResult)) {
                 return false;
+                die;
             }
 
-            $jsonData = json_decode($curlResult, true);
-
-            if (json_last_error() != JSON_ERROR_NONE) {
-                $messages[] = $curlResult;
-                return false;
-            }
-
-            return $jsonData;
+            $json = json_decode($curlResult, true);
         } elseif (ini_get('allow_url_fopen') == true) {
             $opts = array(
                 'http' => array(
@@ -600,21 +569,83 @@ class Causeway {
             if (empty($contents)) {
                 return false;
             }
-
-            $jsonData = json_decode($curlResult, true);
-
-            if (json_last_error() != JSON_ERROR_NONE) {
-                $messages[] = $curlResult;
-                return false;
-            }
-
-            return $jsonData;
+            $json = json_decode($contents, true);
         } else {
             return false;
         }
+
+        if ($json !== false) {
+            $count = 0;
+            $activePostIds = array();
+            $errorListingIds = array();
+            $messages = array();
+
+            /* Create any category terms available to this server */
+            foreach ($json['serverCategories'] as $category) {
+                if (empty($category['description'])) {
+                    $category['description'] = sprintf('%s (Type: %s)', $category['categoryName'], $category['typeName']);
+                }
+
+                $term = get_term_by('slug', $category['termName'], 'listing-category');
+
+
+                if ($term === false) {
+                    wp_insert_term($category['categoryName'], 'listing-category', array(
+                        'description' => $category['description'],
+                        'slug' => $category['termName'],
+                    ));
+                } else {
+                    wp_update_term($term->term_id, 'listing-category', array(
+                        'description' => $category['description'],
+                        'slug' => $category['termName'],
+                    ));
+
+                    if (get_option('causeway-allow-category-rename') != true) {
+                        wp_update_term($term->term_id, 'listing-category', array(
+                            'name' => $category['categoryName'],
+                        ));
+                    }
+                }
+            }
+
+            $currentTimeLimit = ini_get('max_execution_time');
+            set_time_limit(0);
+
+
+            foreach ($json['results'] as $listing) {
+                $postId = $this->generatePost($listing, $messages);
+                if ($postId === false) {
+                    $errorListingIds[] = $listing['id'];
+                } elseif ($postId === -1) {
+                    // Skipped
+                } else {
+                    $count++;
+                    $activePostIds[] = $postId;
+                }
+            }
+
+            foreach ($json['unchanged'] as $listing) {
+                $activePostIds[] = $this->getPostIdByMeta('CausewayId', $listing);
+            }
+
+            $activePostIds = array_filter($activePostIds);
+
+            #echo '<h2>Import Status</h2>';
+            foreach ($messages as $message) {
+                #echo sprintf("%s\n", $message);
+            }
+            $deleted = $this->deleteInactivePosts($activePostIds, $errorListingIds);
+
+            set_time_limit($currentTimeLimit);
+
+            echo 'Finished importing <strong>' . $count . '</strong> listing(s) from Causeway. Deleted <strong>' . $deleted . '</strong> listing(s) from WordPress.';
+        } else {
+            #echo '<p>Unable to parse the feed from Causeway backend. Please contact support.</p>';
+        }
+        exit;
     }
     /****************************************************************************************************/
-    private function deleteInactivePosts($activePostIds, $errorListingIds, &$messages) {
+    private function deleteInactivePosts($activePostIds, $errorListingIds) {
         global $wpdb;
 
         $count = 0;
@@ -634,33 +665,9 @@ class Causeway {
             $attachmentId = get_post_thumbnail_id($postId);
             delete_post_thumbnail($postId);
             wp_delete_attachment($attachmentId, true);
-            $permalink = get_the_permalink($postId);
-            $title = get_the_title($postId);
 
             if (wp_delete_post($postId, true) == true) {
                 $count++;
-
-                $messages[] = sprintf(
-                    'Listing <span style="color: %s;">%s</span> has been successfully
-                    <strong style="color: %s; font-weight: bold;">%s</strong>.',
-                    $permalink,
-                    '#985cc1',
-                    $title,
-                    '#d72c2c',
-                    'deleted',
-                );
-            } else {
-                $messages[] = sprintf(
-                    '<span style="color: %s; font-weight: bold;">ERROR:</span> Listing
-                    <a href="%s" rel="noopener" target="_blank" style="color: %s;">%s</a> could not
-                     be <strong style="color: %s; font-weight: bold;">%s</strong>.',
-                    '#d72c2c',
-                    $permalink,
-                    '#985cc1',
-                    $title,
-                    '#d72c2c',
-                    'deleted',
-                );
             }
         }
 
@@ -670,15 +677,7 @@ class Causeway {
     private function getPostIdByMeta($metaKey, $metaValue) {
         global $wpdb;
 
-        $postId = $wpdb->get_var(
-            $wpdb->prepare(
-                "SELECT post_id FROM $wpdb->postmeta
-                WHERE meta_value = %s AND meta_key = %s
-                ORDER BY post_id DESC",
-                $metaValue,
-                $metaKey
-            )
-        );
+        $postId = $wpdb->get_var( $wpdb->prepare("SELECT post_id FROM $wpdb->postmeta WHERE meta_value = %s AND meta_key = %s ORDER BY post_id DESC", $metaValue, $metaKey));
 
         return $postId;
     }
